@@ -87,9 +87,9 @@ class ScreenObserver {
 
         engine?.appSwitched(to: name)
 
-        // After 3 minutes in the same app, do a deeper context check (free via Accessibility API)
+        // After 15 seconds in the same app, do a context check (free via Accessibility API)
         let capturedName = name
-        appContextTimer = Timer.scheduledTimer(withTimeInterval: 180, repeats: false) { [weak self] _ in
+        appContextTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: false) { [weak self] _ in
             guard let self = self else { return }
             let content = self.getAccessibleContent()
             self.engine?.appContextAvailable(appName: capturedName, content: content)

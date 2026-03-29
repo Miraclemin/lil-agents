@@ -521,9 +521,11 @@ class WalkerCharacter {
             popoverWindow?.makeFirstResponder(terminal.inputField)
         }
 
-        // Auto-send proactive prompt if one is queued (ClaudeSession handles pending queue)
+        // Auto-send proactive prompt — show it in the terminal view first so the
+        // user can see what question was sent, then dispatch to the session.
         if let prompt = pendingProactivePrompt {
             pendingProactivePrompt = nil
+            terminalView?.appendUser(prompt)
             session?.send(message: prompt)
         }
 
