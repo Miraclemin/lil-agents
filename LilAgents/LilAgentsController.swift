@@ -156,7 +156,19 @@ class LilAgentsController {
         if pinnedScreenIndex >= 0, pinnedScreenIndex < NSScreen.screens.count {
             return NSScreen.screens[pinnedScreenIndex]
         }
-        return NSScreen.main
+        // Prefer the screen that currently shows the dock (bottom inset in visibleFrame).
+        // NSScreen.main changes with keyboard focus and must NOT be used here — clicking a
+        // secondary display switches NSScreen.main to that display, causing characters on
+        // the dock screen to be incorrectly hidden.
+        if let dockScreen = NSScreen.screens.first(where: { screenHasDock($0) }) {
+            return dockScreen
+        }
+        // Dock is auto-hidden: fall back to the primary display, identified as the screen
+        // whose menu bar reserves space at the top (visibleFrame.maxY < frame.maxY).
+        if let primaryScreen = NSScreen.screens.first(where: { $0.visibleFrame.maxY < $0.frame.maxY }) {
+            return primaryScreen
+        }
+        return NSScreen.screens.first
     }
 
     /// The dock lives on the screen where visibleFrame.origin.y > frame.origin.y (bottom dock)
@@ -174,7 +186,7 @@ class LilAgentsController {
         // present even though visibleFrame starts at the screen origin. In fullscreen
         // spaces, both the dock and menu bar are absent, so visibleFrame matches frame.
         let menuBarVisible = screen.visibleFrame.maxY < screen.frame.maxY
-        return dockAutohideEnabled() && screen == NSScreen.main && menuBarVisible
+        return dockAutohideEnabled() && menuBarVisible
     }
 
     @discardableResult
