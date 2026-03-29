@@ -28,9 +28,9 @@ class ProactiveTriggerEngine {
     // MARK: - Event Handlers (called by ScreenObserver)
 
     func clipboardChanged(content: String) {
-        guard canTrigger(type: "clipboard") else { return }
+        // No cooldown for clipboard — every copy that matches a rule fires immediately.
         guard let suggestion = makeClipboardSuggestion(content: content) else { return }
-        fire(suggestion: suggestion)
+        fire(suggestion: suggestion, allowReplace: true)
     }
 
     func appSwitched(to appName: String) {
@@ -41,7 +41,7 @@ class ProactiveTriggerEngine {
         let key = "appContext_\(appName.lowercased())"
         guard canTrigger(type: key) else { return }
         guard let suggestion = makeAppContextSuggestion(appName: appName, content: content) else { return }
-        fire(suggestion: suggestion)
+        fire(suggestion: suggestion, allowReplace: false)
     }
 
     // MARK: - Clipboard Suggestions
@@ -160,17 +160,22 @@ class ProactiveTriggerEngine {
 
     // MARK: - Fire
 
-    private func fire(suggestion: ProactiveSuggestion) {
+    /// - parameter allowReplace: When true the suggestion replaces any existing
+    ///   bubble that hasn't been acted on yet (used for clipboard events).
+    private func fire(suggestion: ProactiveSuggestion, allowReplace: Bool) {
         let now = Date()
         lastTriggerTime = now
         lastTriggerTypeTime[suggestion.typeKey] = now
 
         DispatchQueue.main.async { [weak self] in
             guard let controller = self?.controller else { return }
-            // Pick first character that is visible, not in chat, and not already showing a suggestion
+            // Prefer a character that has no pending suggestion; fall back to
+            // replacing an existing one when allowReplace is true.
             let target = controller.characters.first {
                 $0.isManuallyVisible && !$0.isIdleForPopover && $0.pendingProactiveSuggestion == nil
-            }
+            } ?? (allowReplace ? controller.characters.first {
+                $0.isManuallyVisible && !$0.isIdleForPopover
+            } : nil)
             target?.showProactiveSuggestion(suggestion)
         }
     }

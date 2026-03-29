@@ -578,6 +578,13 @@ class WalkerCharacter {
 
     func showProactiveSuggestion(_ suggestion: ProactiveSuggestion) {
         guard !isIdleForPopover else { return }
+
+        // Replace any existing bubble with the fresh suggestion
+        if proactiveBubbleWindow != nil {
+            proactiveBubbleWindow?.orderOut(nil)
+            proactiveBubbleWindow = nil
+        }
+
         pendingProactiveSuggestion = suggestion
         proactiveBubbleExpiry = CACurrentMediaTime() + 30.0
 
