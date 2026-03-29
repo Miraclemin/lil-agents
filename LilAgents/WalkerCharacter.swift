@@ -24,6 +24,24 @@ class WalkerCharacter {
     var flipXOffset: CGFloat = 0
     var characterColor: NSColor = .gray
 
+    // Per-character identity and customisation
+    var characterIndex: Int = 0
+    var sizeAdjust: CGFloat = 0
+    var yOffsetExtra: CGFloat = 0
+    var customImageURL: URL?
+    /// Plain CALayer (not view-backed) used to display the custom image.
+    /// Using a pure CALayer (same approach as playerLayer) ensures that
+    /// flip transforms are never reset by AppKit and that anchorPoint stays
+    /// at the CALayer default (0.5, 0.5) so content flips around the centre.
+    var imageDisplayLayer: CALayer?
+    /// When true the custom image faces left by default, so it is mirrored
+    /// horizontally when walking right to ensure face and direction match.
+    var mirrorImage: Bool = false
+
+    var effectiveDisplayHeight: CGFloat { displayHeight + sizeAdjust }
+    var effectiveDisplayWidth: CGFloat  { effectiveDisplayHeight * (videoWidth / videoHeight) }
+    var effectiveYOffset: CGFloat       { yOffset + yOffsetExtra }
+
     // Walk state
     var playCount = 0
     var walkStartTime: CFTimeInterval = 0
@@ -66,26 +84,14 @@ class WalkerCharacter {
     // MARK: - Setup
 
     func setup() {
-        guard let videoURL = Bundle.main.url(forResource: videoName, withExtension: "mov") else {
-            print("Video \(videoName) not found")
-            return
-        }
-
-        let asset = AVAsset(url: videoURL)
-        queuePlayer = AVQueuePlayer()
-        looper = AVPlayerLooper(player: queuePlayer, templateItem: AVPlayerItem(asset: asset))
-
-        playerLayer = AVPlayerLayer(player: queuePlayer)
-        playerLayer.videoGravity = .resizeAspect
-        playerLayer.backgroundColor = NSColor.clear.cgColor
-        playerLayer.frame = CGRect(x: 0, y: 0, width: displayWidth, height: displayHeight)
+        loadPreferences()
 
         let screen = NSScreen.main!
         let dockTopY = screen.visibleFrame.origin.y
-        let bottomPadding = displayHeight * 0.15
-        let y = dockTopY - bottomPadding + yOffset
+        let bottomPadding = effectiveDisplayHeight * 0.15
+        let y = dockTopY - bottomPadding + effectiveYOffset
 
-        let contentRect = CGRect(x: 0, y: y, width: displayWidth, height: displayHeight)
+        let contentRect = CGRect(x: 0, y: y, width: effectiveDisplayWidth, height: effectiveDisplayHeight)
         window = NSWindow(
             contentRect: contentRect,
             styleMask: .borderless,
@@ -99,14 +105,210 @@ class WalkerCharacter {
         window.ignoresMouseEvents = false
         window.collectionBehavior = [.moveToActiveSpace, .stationary]
 
-        let hostView = CharacterContentView(frame: CGRect(x: 0, y: 0, width: displayWidth, height: displayHeight))
+        let hostView = CharacterContentView(frame: CGRect(x: 0, y: 0, width: effectiveDisplayWidth, height: effectiveDisplayHeight))
         hostView.character = self
         hostView.wantsLayer = true
         hostView.layer?.backgroundColor = NSColor.clear.cgColor
-        hostView.layer?.addSublayer(playerLayer)
+
+        if let imageURL = customImageURL {
+            let imgLayer = makeImageLayer(url: imageURL, size: CGSize(width: effectiveDisplayWidth, height: effectiveDisplayHeight))
+            imageDisplayLayer = imgLayer
+            hostView.layer?.addSublayer(imgLayer)
+        } else {
+            guard let videoURL = Bundle.main.url(forResource: videoName, withExtension: "mov") else {
+                print("Video \(videoName) not found")
+                return
+            }
+            let asset = AVAsset(url: videoURL)
+            queuePlayer = AVQueuePlayer()
+            looper = AVPlayerLooper(player: queuePlayer, templateItem: AVPlayerItem(asset: asset))
+            playerLayer = AVPlayerLayer(player: queuePlayer)
+            playerLayer.videoGravity = .resizeAspect
+            playerLayer.backgroundColor = NSColor.clear.cgColor
+            playerLayer.frame = CGRect(x: 0, y: 0, width: effectiveDisplayWidth, height: effectiveDisplayHeight)
+            hostView.layer?.addSublayer(playerLayer)
+        }
 
         window.contentView = hostView
         window.orderFrontRegardless()
+    }
+
+    // MARK: - Custom Image & Size Adjustments
+
+    /// Creates a plain CALayer (same approach as playerLayer) that displays
+    /// the custom image. Because this is NOT a view-backed layer, AppKit never
+    /// resets its transform, and the default anchorPoint (0.5, 0.5) means that
+    /// CATransform3DMakeScale(-1, 1, 1) flips around the centre — content stays
+    /// on-screen after the flip rather than flying off to negative-x space.
+    ///
+    /// Format detection:
+    ///  - Animated GIF → CAKeyframeAnimation on "contents" preserves per-frame timing
+    ///  - Static PNG / JPEG / HEIC / etc. → layer.contents = NSImage (single frame)
+    ///  - MOV → handled separately by AVPlayerLayer (unchanged)
+    private func makeImageLayer(url: URL, size: CGSize) -> CALayer {
+        let layer = CALayer()
+        layer.frame = CGRect(origin: .zero, size: size)
+        layer.contentsGravity = .resizeAspect
+        layer.contentsScale = NSScreen.main?.backingScaleFactor ?? 1.0
+
+        guard let image = NSImage(contentsOf: url) else { return layer }
+
+        // Try animated GIF: NSBitmapImageRep exposes frameCount / currentFrameDuration
+        let bitmapReps = image.representations.compactMap { $0 as? NSBitmapImageRep }
+        if let bitmapRep = bitmapReps.first,
+           let frameCount = (bitmapRep.value(forProperty: .frameCount) as? NSNumber)?.intValue,
+           frameCount > 1 {
+            applyGIFAnimation(to: layer, bitmapRep: bitmapRep, frameCount: frameCount)
+        } else {
+            layer.contents = image
+        }
+
+        return layer
+    }
+
+    /// Extracts all GIF frames from `bitmapRep` and drives them with a
+    /// `CAKeyframeAnimation` so the custom image layer animates exactly like
+    /// a normal animated GIF — without needing an NSImageView.
+    private func applyGIFAnimation(to layer: CALayer,
+                                   bitmapRep: NSBitmapImageRep,
+                                   frameCount: Int) {
+        var frames: [CGImage] = []
+        var delays: [Double] = []
+
+        for i in 0..<frameCount {
+            bitmapRep.setProperty(.currentFrame, withValue: NSNumber(value: i))
+            if let cgImage = bitmapRep.cgImage {
+                frames.append(cgImage)
+            }
+            let delay = (bitmapRep.value(forProperty: .currentFrameDuration) as? Double) ?? 0.1
+            delays.append(max(delay, 0.02)) // enforce minimum 20 ms
+        }
+
+        guard !frames.isEmpty else { return }
+
+        let totalDuration = delays.reduce(0, +)
+
+        // One keyTime per frame, each at the cumulative start of that frame.
+        // CAKeyframeAnimation(.discrete) holds each value until the next keyTime.
+        var keyTimes: [NSNumber] = []
+        var elapsed = 0.0
+        for delay in delays {
+            keyTimes.append(NSNumber(value: elapsed / totalDuration))
+            elapsed += delay
+        }
+
+        let anim = CAKeyframeAnimation(keyPath: "contents")
+        anim.values = frames.map { $0 as Any }
+        anim.keyTimes = keyTimes
+        anim.duration = totalDuration
+        anim.repeatCount = .infinity
+        anim.calculationMode = .discrete
+
+        layer.add(anim, forKey: "gifAnimation")
+        layer.contents = frames.first // show first frame immediately
+    }
+
+    func applyWindowSizeChange() {
+        let newSize = CGSize(width: effectiveDisplayWidth, height: effectiveDisplayHeight)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        if let pl = playerLayer {
+            pl.frame = CGRect(origin: .zero, size: newSize)
+        }
+        if let il = imageDisplayLayer {
+            il.frame = CGRect(origin: .zero, size: newSize)
+        }
+        CATransaction.commit()
+        if let hostView = window.contentView {
+            hostView.setFrameSize(newSize)
+        }
+        var frame = window.frame
+        frame.size = newSize
+        window.setFrame(frame, display: true)
+    }
+
+    func setCustomImage(url: URL) {
+        customImageURL = url
+        queuePlayer?.pause()
+        looper = nil
+        queuePlayer = nil
+        playerLayer?.removeFromSuperlayer()
+        playerLayer = nil
+        imageDisplayLayer?.removeFromSuperlayer()
+        imageDisplayLayer = nil
+        guard let hostView = window.contentView else { return }
+        hostView.wantsLayer = true
+        let imgLayer = makeImageLayer(url: url, size: CGSize(width: effectiveDisplayWidth, height: effectiveDisplayHeight))
+        imageDisplayLayer = imgLayer
+        hostView.layer?.addSublayer(imgLayer)
+        applyWindowSizeChange()
+        updateFlip()
+        savePreferences()
+    }
+
+    func removeCustomImage() {
+        customImageURL = nil
+        imageDisplayLayer?.removeFromSuperlayer()
+        imageDisplayLayer = nil
+        guard let videoURL = Bundle.main.url(forResource: videoName, withExtension: "mov"),
+              let hostView = window.contentView else { return }
+        let asset = AVAsset(url: videoURL)
+        queuePlayer = AVQueuePlayer()
+        looper = AVPlayerLooper(player: queuePlayer, templateItem: AVPlayerItem(asset: asset))
+        playerLayer = AVPlayerLayer(player: queuePlayer)
+        playerLayer.videoGravity = .resizeAspect
+        playerLayer.backgroundColor = NSColor.clear.cgColor
+        playerLayer.frame = CGRect(origin: .zero, size: CGSize(width: effectiveDisplayWidth, height: effectiveDisplayHeight))
+        hostView.wantsLayer = true
+        hostView.layer?.addSublayer(playerLayer)
+        applyWindowSizeChange()
+        savePreferences()
+    }
+
+    func adjustSize(by delta: CGFloat) {
+        sizeAdjust += delta
+        applyWindowSizeChange()
+        savePreferences()
+    }
+
+    func adjustYOffsetExtra(by delta: CGFloat) {
+        yOffsetExtra += delta
+        savePreferences()
+    }
+
+    func resetAdjustments() {
+        sizeAdjust = 0
+        yOffsetExtra = 0
+        applyWindowSizeChange()
+        savePreferences()
+    }
+
+    // MARK: - Preferences Persistence
+
+    private var prefsKey: String { "walkerChar_\(characterIndex)" }
+
+    func savePreferences() {
+        var dict: [String: Any] = [
+            "sizeAdjust": Double(sizeAdjust),
+            "yOffsetExtra": Double(yOffsetExtra),
+            "mirrorImage": mirrorImage
+        ]
+        if let url = customImageURL {
+            dict["customImageURL"] = url.absoluteString
+        }
+        UserDefaults.standard.set(dict, forKey: prefsKey)
+    }
+
+    func loadPreferences() {
+        guard let dict = UserDefaults.standard.dictionary(forKey: prefsKey) else { return }
+        if let v = dict["sizeAdjust"]    as? Double { sizeAdjust    = CGFloat(v) }
+        if let v = dict["yOffsetExtra"]  as? Double { yOffsetExtra  = CGFloat(v) }
+        if let v = dict["mirrorImage"]   as? Bool   { mirrorImage   = v }
+        if let s = dict["customImageURL"] as? String,
+           let url = URL(string: s),
+           FileManager.default.fileExists(atPath: url.path) {
+            customImageURL = url
+        }
     }
 
     // MARK: - Visibility
@@ -118,7 +320,7 @@ class WalkerCharacter {
                 window.orderFrontRegardless()
             }
         } else {
-            queuePlayer.pause()
+            queuePlayer?.pause()
             window.orderOut(nil)
             popoverWindow?.orderOut(nil)
             thinkingBubbleWindow?.orderOut(nil)
@@ -132,7 +334,7 @@ class WalkerCharacter {
         wasPopoverVisibleBeforeEnvironmentHide = popoverWindow?.isVisible ?? false
         wasBubbleVisibleBeforeEnvironmentHide = thinkingBubbleWindow?.isVisible ?? false
 
-        queuePlayer.pause()
+        queuePlayer?.pause()
         window.orderOut(nil)
         popoverWindow?.orderOut(nil)
         thinkingBubbleWindow?.orderOut(nil)
@@ -152,7 +354,7 @@ class WalkerCharacter {
 
         window.orderFrontRegardless()
         if isWalking {
-            queuePlayer.play()
+            queuePlayer?.play()
         }
 
         if isIdleForPopover && wasPopoverVisibleBeforeEnvironmentHide {
@@ -190,8 +392,8 @@ class WalkerCharacter {
         isIdleForPopover = true
         isWalking = false
         isPaused = true
-        queuePlayer.pause()
-        queuePlayer.seek(to: .zero)
+        queuePlayer?.pause()
+        queuePlayer?.seek(to: .zero)
 
         if popoverWindow == nil {
             createPopoverWindow()
@@ -235,7 +437,7 @@ class WalkerCharacter {
         isOnboarding = false
         isPaused = true
         pauseEndTime = CACurrentMediaTime() + Double.random(in: 1.0...3.0)
-        queuePlayer.seek(to: .zero)
+        queuePlayer?.seek(to: .zero)
         controller?.completeOnboarding()
     }
 
@@ -250,8 +452,8 @@ class WalkerCharacter {
         isIdleForPopover = true
         isWalking = false
         isPaused = true
-        queuePlayer.pause()
-        queuePlayer.seek(to: .zero)
+        queuePlayer?.pause()
+        queuePlayer?.seek(to: .zero)
 
         // Always clear any bubble (thinking or completion) when popover opens
         showingCompletion = false
@@ -716,28 +918,39 @@ class WalkerCharacter {
         }
 
         updateFlip()
-        queuePlayer.seek(to: .zero)
-        queuePlayer.play()
+        queuePlayer?.seek(to: .zero)
+        queuePlayer?.play()
     }
 
     func enterPause() {
         isWalking = false
         isPaused = true
-        queuePlayer.pause()
-        queuePlayer.seek(to: .zero)
-        let delay = Double.random(in: 5.0...12.0)
-        pauseEndTime = CACurrentMediaTime() + delay
+        queuePlayer?.pause()
+        queuePlayer?.seek(to: .zero)
+        pauseEndTime = CACurrentMediaTime() + walkPauseDelay
     }
+
+    /// Set to 0 for continuous walking, or a positive value for a pause between walks.
+    var walkPauseDelay: Double = 0.0
 
     func updateFlip() {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        if goingRight {
-            playerLayer.transform = CATransform3DIdentity
-        } else {
-            playerLayer.transform = CATransform3DMakeScale(-1, 1, 1)
+        if let pl = playerLayer {
+            // Video character faces right by default: flip when going left.
+            pl.transform = goingRight ? CATransform3DIdentity : CATransform3DMakeScale(-1, 1, 1)
+            pl.frame = CGRect(x: 0, y: 0, width: effectiveDisplayWidth, height: effectiveDisplayHeight)
         }
-        playerLayer.frame = CGRect(x: 0, y: 0, width: displayWidth, height: displayHeight)
+        if let il = imageDisplayLayer {
+            // imageDisplayLayer is a plain CALayer (anchorPoint = 0.5, 0.5 default).
+            // Scale(-1,1,1) flips around the centre, so content stays on-screen.
+            // mirrorImage=false → image faces right (same as video logic).
+            // mirrorImage=true  → image faces left; flip when going right so
+            //                     face and direction always match.
+            let shouldFlip = (goingRight == mirrorImage)
+            il.transform = shouldFlip ? CATransform3DMakeScale(-1, 1, 1) : CATransform3DIdentity
+            il.frame = CGRect(x: 0, y: 0, width: effectiveDisplayWidth, height: effectiveDisplayHeight)
+        }
         CATransaction.commit()
     }
 
@@ -773,12 +986,12 @@ class WalkerCharacter {
     // MARK: - Frame Update
 
     func update(dockX: CGFloat, dockWidth: CGFloat, dockTopY: CGFloat) {
-        currentTravelDistance = max(dockWidth - displayWidth, 0)
+        currentTravelDistance = max(dockWidth - effectiveDisplayWidth, 0)
         if isIdleForPopover {
             let travelDistance = currentTravelDistance
             let x = dockX + travelDistance * positionProgress + currentFlipCompensation
-            let bottomPadding = displayHeight * 0.15
-            let y = dockTopY - bottomPadding + yOffset
+            let bottomPadding = effectiveDisplayHeight * 0.15
+            let y = dockTopY - bottomPadding + effectiveYOffset
             window.setFrameOrigin(NSPoint(x: x, y: y))
             updatePopoverPosition()
             updateThinkingBubble()
@@ -791,10 +1004,10 @@ class WalkerCharacter {
             if now >= pauseEndTime {
                 startWalk()
             } else {
-                let travelDistance = max(dockWidth - displayWidth, 0)
+                let travelDistance = max(dockWidth - effectiveDisplayWidth, 0)
                 let x = dockX + travelDistance * positionProgress + currentFlipCompensation
-                let bottomPadding = displayHeight * 0.15
-                let y = dockTopY - bottomPadding + yOffset
+                let bottomPadding = effectiveDisplayHeight * 0.15
+                let y = dockTopY - bottomPadding + effectiveYOffset
                 window.setFrameOrigin(NSPoint(x: x, y: y))
                 return
             }
@@ -821,8 +1034,8 @@ class WalkerCharacter {
             }
 
             let x = dockX + travelDistance * positionProgress + currentFlipCompensation
-            let bottomPadding = displayHeight * 0.15
-            let y = dockTopY - bottomPadding + yOffset
+            let bottomPadding = effectiveDisplayHeight * 0.15
+            let y = dockTopY - bottomPadding + effectiveYOffset
             window.setFrameOrigin(NSPoint(x: x, y: y))
         }
 
