@@ -111,6 +111,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             resetItem.tag = idx
             charMenu.addItem(resetItem)
 
+            charMenu.addItem(.separator())
+
+            let personaItem = NSMenuItem(title: "Configure Persona…", action: #selector(configurePersona(_:)), keyEquivalent: "")
+            personaItem.tag = idx
+            charMenu.addItem(personaItem)
+
             charItem.submenu = charMenu
             menu.addItem(charItem)
         }
@@ -163,14 +169,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         displayItem.submenu = displayMenu
         menu.addItem(displayItem)
-
-        // Persona
-        let personaItem = NSMenuItem(title: "Persona", action: nil, keyEquivalent: "")
-        let personaMenu = NSMenu()
-        let configureItem = NSMenuItem(title: "Configure Persona…", action: #selector(configurePersona), keyEquivalent: "")
-        personaMenu.addItem(configureItem)
-        personaItem.submenu = personaMenu
-        menu.addItem(personaItem)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -369,18 +367,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.terminate(nil)
     }
 
-    // MARK: - Persona Configuration
+    // MARK: - Persona Configuration (per-character)
 
     private var personaPanel: NSPanel?
+    private var personaEditingIndex: Int = 0
+    private weak var personaNameField: NSTextField?
     private weak var personaDescView: NSTextView?
 
-    @objc func configurePersona() {
-        if let existing = personaPanel, existing.isVisible {
+    @objc func configurePersona(_ sender: NSMenuItem) {
+        let idx = sender.tag
+        guard let char = character(at: idx) else { return }
+
+        // Reuse open panel if it's for the same character
+        if let existing = personaPanel, existing.isVisible, personaEditingIndex == idx {
             existing.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
         }
+        personaPanel?.close()
+        personaEditingIndex = idx
 
+        let charNames = ["Bruce", "Jazz"]
+        let charName = idx < charNames.count ? charNames[idx] : "Character \(idx + 1)"
         let panelW: CGFloat = 360
         let panelH: CGFloat = 250
 
@@ -390,7 +398,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             backing: .buffered,
             defer: false
         )
-        panel.title = "Configure Persona"
+        panel.title = "\(charName) — Persona"
         panel.isFloatingPanel = true
         panel.center()
 
@@ -403,10 +411,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         container.addSubview(nameLabel)
 
         let nameField = NSTextField(frame: NSRect(x: 20, y: 168, width: 320, height: 22))
-        nameField.placeholderString = "例如：Alex"
-        nameField.stringValue = PersonaConfig.name
+        nameField.placeholderString = "默认：\(charName)"
+        nameField.stringValue = char.personaName
         nameField.tag = 300
         container.addSubview(nameField)
+        personaNameField = nameField
 
         // Personality description
         let descLabel = NSTextField(labelWithString: "Personality")
@@ -418,7 +427,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         scrollView.hasVerticalScroller = true
         scrollView.borderType = .bezelBorder
         let descField = NSTextView(frame: NSRect(x: 0, y: 0, width: 320, height: 78))
-        descField.string = PersonaConfig.personalityDescription
+        descField.string = char.personaDescription
         descField.font = .systemFont(ofSize: 12)
         descField.isEditable = true
         descField.isRichText = false
@@ -433,11 +442,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         container.addSubview(hint)
 
         // Save button
-        let saveBtn = NSButton(title: "Save", target: nil, action: #selector(savePersona(_:)))
+        let saveBtn = NSButton(title: "Save", target: self, action: #selector(savePersona(_:)))
         saveBtn.bezelStyle = .rounded
         saveBtn.keyEquivalent = "\r"
         saveBtn.frame = NSRect(x: panelW - 100, y: 12, width: 80, height: 22)
-        saveBtn.tag = 302
         container.addSubview(saveBtn)
 
         panel.contentView = container
@@ -447,22 +455,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func savePersona(_ sender: NSButton) {
-        guard let panel = personaPanel,
-              let container = panel.contentView else { return }
+        let idx = personaEditingIndex
+        guard let char = character(at: idx) else { return }
 
-        if let nameField = container.viewWithTag(300) as? NSTextField {
-            PersonaConfig.name = nameField.stringValue
+        if let nameField = personaNameField {
+            char.personaName = nameField.stringValue
         }
         if let descField = personaDescView {
-            PersonaConfig.personalityDescription = descField.string
+            char.personaDescription = descField.string
         }
+        char.savePreferences()
 
-        // Restart Claude sessions so persona takes effect immediately
-        controller?.characters.forEach { char in
-            char.session?.terminate()
-            char.session = nil
-            if char.isIdleForPopover { char.closePopover() }
-        }
+        // Restart this character's session so persona takes effect immediately
+        char.session?.terminate()
+        char.session = nil
+        if char.isIdleForPopover { char.closePopover() }
 
         personaPanel?.close()
         personaPanel = nil

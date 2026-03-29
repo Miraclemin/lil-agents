@@ -19,6 +19,7 @@ class CopilotSession: AgentSession {
     var onTurnComplete: (() -> Void)?
     var onProcessExit: (() -> Void)?
 
+    var systemPrompt: String?
     var history: [AgentMessage] = []
 
     // MARK: - Lifecycle

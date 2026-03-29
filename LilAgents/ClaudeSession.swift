@@ -20,6 +20,7 @@ class ClaudeSession: AgentSession {
     var onTurnComplete: (() -> Void)?
     var onProcessExit: (() -> Void)?
 
+    var systemPrompt: String?
     var history: [AgentMessage] = []
 
     // MARK: - Process Lifecycle
@@ -58,8 +59,8 @@ class ClaudeSession: AgentSession {
             "--verbose",
             "--dangerously-skip-permissions"
         ]
-        if let systemPrompt = PersonaConfig.systemPromptString {
-            args += ["--system-prompt", systemPrompt]
+        if let prompt = systemPrompt, !prompt.isEmpty {
+            args += ["--system-prompt", prompt]
         }
         proc.arguments = args
         proc.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser

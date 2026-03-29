@@ -26,6 +26,10 @@ class WalkerCharacter {
 
     // Per-character identity and customisation
     var characterIndex: Int = 0
+    /// Display name used in system prompt. Defaults to the video asset name.
+    var personaName: String = ""
+    /// Personality description injected into Claude's system prompt.
+    var personaDescription: String = ""
     var sizeAdjust: CGFloat = 0
     var yOffsetExtra: CGFloat = 0
     var customImageURL: URL?
@@ -291,13 +295,31 @@ class WalkerCharacter {
 
     // MARK: - Preferences Persistence
 
+    /// Default display names for each character slot.
+    private var defaultPersonaName: String {
+        characterIndex == 0 ? "Bruce" : "Jazz"
+    }
+
+    /// System prompt string passed to the session, combining name and description.
+    var systemPromptString: String {
+        let n = personaName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let d = personaDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayName = n.isEmpty ? defaultPersonaName : n
+        var parts: [String] = ["你的名字是\(displayName)。"]
+        if !d.isEmpty { parts.append("你的性格特点：\(d)。") }
+        parts.append("你是用户的桌面AI伴侣，陪在用户Mac屏幕的下方。用自然、口语化的语气交流，除非需要否则回答要简洁。")
+        return parts.joined(separator: " ")
+    }
+
     private var prefsKey: String { "walkerChar_\(characterIndex)" }
 
     func savePreferences() {
         var dict: [String: Any] = [
             "sizeAdjust": Double(sizeAdjust),
             "yOffsetExtra": Double(yOffsetExtra),
-            "mirrorImage": mirrorImage
+            "mirrorImage": mirrorImage,
+            "personaName": personaName,
+            "personaDescription": personaDescription
         ]
         if let url = customImageURL {
             dict["customImageURL"] = url.absoluteString
@@ -307,9 +329,11 @@ class WalkerCharacter {
 
     func loadPreferences() {
         guard let dict = UserDefaults.standard.dictionary(forKey: prefsKey) else { return }
-        if let v = dict["sizeAdjust"]    as? Double { sizeAdjust    = CGFloat(v) }
-        if let v = dict["yOffsetExtra"]  as? Double { yOffsetExtra  = CGFloat(v) }
-        if let v = dict["mirrorImage"]   as? Bool   { mirrorImage   = v }
+        if let v = dict["sizeAdjust"]          as? Double { sizeAdjust          = CGFloat(v) }
+        if let v = dict["yOffsetExtra"]        as? Double { yOffsetExtra        = CGFloat(v) }
+        if let v = dict["mirrorImage"]         as? Bool   { mirrorImage         = v }
+        if let v = dict["personaName"]         as? String { personaName         = v }
+        if let v = dict["personaDescription"]  as? String { personaDescription  = v }
         if let s = dict["customImageURL"] as? String,
            let url = URL(string: s),
            FileManager.default.fileExists(atPath: url.path) {
@@ -475,6 +499,7 @@ class WalkerCharacter {
 
         if session == nil {
             let newSession = AgentProvider.current.createSession()
+            newSession.systemPrompt = systemPromptString
             session = newSession
             wireSession(newSession)
             newSession.start()

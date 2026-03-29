@@ -80,6 +80,8 @@ protocol AgentSession: AnyObject {
     var isRunning: Bool { get }
     var isBusy: Bool { get }
     var history: [AgentMessage] { get }
+    /// Optional system prompt injected at session start (e.g. character persona).
+    var systemPrompt: String? { get set }
 
     var onText: ((String) -> Void)? { get set }
     var onError: ((String) -> Void)? { get set }
