@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import Sparkle
+import UniformTypeIdentifiers
 
 @main
 struct LilAgentsApp: App {
@@ -15,6 +16,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var controller: LilAgentsController?
     var statusItem: NSStatusItem?
     let updaterController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+
+    // Per-character submenu state items (index 0 = Bruce, 1 = Jazz)
+    var charVisibleItems:     [NSMenuItem] = []
+    var charSizeLabelItems:   [NSMenuItem] = []
+    var charOffsetLabelItems: [NSMenuItem] = []
+    var charRemoveImageItems: [NSMenuItem] = []
+    var charMirrorImageItems: [NSMenuItem] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -37,13 +45,75 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let menu = NSMenu()
 
-        let char1Item = NSMenuItem(title: "Bruce", action: #selector(toggleChar1), keyEquivalent: "1")
-        char1Item.state = .on
-        menu.addItem(char1Item)
+        let charNames = ["Bruce", "Jazz"]
+        let charKeys  = ["1", "2"]
+        for idx in 0..<2 {
+            let charItem = NSMenuItem(title: charNames[idx], action: nil, keyEquivalent: charKeys[idx])
+            let charMenu = NSMenu()
 
-        let char2Item = NSMenuItem(title: "Jazz", action: #selector(toggleChar2), keyEquivalent: "2")
-        char2Item.state = .on
-        menu.addItem(char2Item)
+            let visItem = NSMenuItem(title: "Visible", action: #selector(toggleCharVisibility(_:)), keyEquivalent: "")
+            visItem.tag = idx
+            visItem.state = .on
+            charMenu.addItem(visItem)
+            charVisibleItems.append(visItem)
+
+            charMenu.addItem(.separator())
+
+            let setImgItem = NSMenuItem(title: "Set Custom Image…", action: #selector(setCustomImage(_:)), keyEquivalent: "")
+            setImgItem.tag = idx
+            charMenu.addItem(setImgItem)
+
+            let removeImgItem = NSMenuItem(title: "Remove Custom Image", action: #selector(removeCustomImage(_:)), keyEquivalent: "")
+            removeImgItem.tag = idx
+            removeImgItem.isEnabled = false
+            charMenu.addItem(removeImgItem)
+            charRemoveImageItems.append(removeImgItem)
+
+            let mirrorItem = NSMenuItem(title: "Mirror Image (faces left by default)", action: #selector(charMirrorImage(_:)), keyEquivalent: "")
+            mirrorItem.tag = idx
+            mirrorItem.state = .off
+            charMenu.addItem(mirrorItem)
+            charMirrorImageItems.append(mirrorItem)
+
+            charMenu.addItem(.separator())
+
+            let sizeLabelItem = NSMenuItem(title: "Size: 0 pt", action: nil, keyEquivalent: "")
+            sizeLabelItem.isEnabled = false
+            charMenu.addItem(sizeLabelItem)
+            charSizeLabelItems.append(sizeLabelItem)
+
+            let largerItem = NSMenuItem(title: "Larger", action: #selector(charLarger(_:)), keyEquivalent: "")
+            largerItem.tag = idx
+            charMenu.addItem(largerItem)
+
+            let smallerItem = NSMenuItem(title: "Smaller", action: #selector(charSmaller(_:)), keyEquivalent: "")
+            smallerItem.tag = idx
+            charMenu.addItem(smallerItem)
+
+            charMenu.addItem(.separator())
+
+            let offsetLabelItem = NSMenuItem(title: "Y Offset: 0 pt", action: nil, keyEquivalent: "")
+            offsetLabelItem.isEnabled = false
+            charMenu.addItem(offsetLabelItem)
+            charOffsetLabelItems.append(offsetLabelItem)
+
+            let moveUpItem = NSMenuItem(title: "Move Up", action: #selector(charMoveUp(_:)), keyEquivalent: "")
+            moveUpItem.tag = idx
+            charMenu.addItem(moveUpItem)
+
+            let moveDownItem = NSMenuItem(title: "Move Down", action: #selector(charMoveDown(_:)), keyEquivalent: "")
+            moveDownItem.tag = idx
+            charMenu.addItem(moveDownItem)
+
+            charMenu.addItem(.separator())
+
+            let resetItem = NSMenuItem(title: "Reset Adjustments", action: #selector(charReset(_:)), keyEquivalent: "")
+            resetItem.tag = idx
+            charMenu.addItem(resetItem)
+
+            charItem.submenu = charMenu
+            menu.addItem(charItem)
+        }
 
         menu.addItem(NSMenuItem.separator())
 
@@ -181,28 +251,94 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc func toggleChar1(_ sender: NSMenuItem) {
-        guard let chars = controller?.characters, chars.count > 0 else { return }
-        let char = chars[0]
-        if char.isManuallyVisible {
-            char.setManuallyVisible(false)
-            sender.state = .off
-        } else {
-            char.setManuallyVisible(true)
-            sender.state = .on
+    // MARK: - Per-character actions
+
+    private func character(at index: Int) -> WalkerCharacter? {
+        guard let chars = controller?.characters, index < chars.count else { return nil }
+        return chars[index]
+    }
+
+    @objc func toggleCharVisibility(_ sender: NSMenuItem) {
+        guard let char = character(at: sender.tag) else { return }
+        let nowVisible = !char.isManuallyVisible
+        char.setManuallyVisible(nowVisible)
+        sender.state = nowVisible ? .on : .off
+    }
+
+    @objc func setCustomImage(_ sender: NSMenuItem) {
+        let idx = sender.tag
+        guard let char = character(at: idx) else { return }
+        let panel = NSOpenPanel()
+        panel.title = "Choose a custom character image"
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [UTType.png, UTType.gif, UTType.jpeg]
+        panel.begin { [weak self] response in
+            guard response == .OK, let url = panel.url else { return }
+            char.setCustomImage(url: url)
+            if idx < (self?.charRemoveImageItems.count ?? 0) {
+                self?.charRemoveImageItems[idx].isEnabled = true
+            }
         }
     }
 
-    @objc func toggleChar2(_ sender: NSMenuItem) {
-        guard let chars = controller?.characters, chars.count > 1 else { return }
-        let char = chars[1]
-        if char.isManuallyVisible {
-            char.setManuallyVisible(false)
-            sender.state = .off
-        } else {
-            char.setManuallyVisible(true)
-            sender.state = .on
+    @objc func removeCustomImage(_ sender: NSMenuItem) {
+        guard let char = character(at: sender.tag) else { return }
+        char.removeCustomImage()
+        sender.isEnabled = false
+    }
+
+    @objc func charMirrorImage(_ sender: NSMenuItem) {
+        let idx = sender.tag
+        guard let char = character(at: idx) else { return }
+        char.mirrorImage.toggle()
+        sender.state = char.mirrorImage ? .on : .off
+        char.updateFlip()
+        char.savePreferences()
+    }
+
+    @objc func charLarger(_ sender: NSMenuItem) {
+        let idx = sender.tag
+        guard let char = character(at: idx) else { return }
+        char.adjustSize(by: 10)
+        if idx < charSizeLabelItems.count {
+            charSizeLabelItems[idx].title = "Size: \(Int(char.sizeAdjust)) pt"
         }
+    }
+
+    @objc func charSmaller(_ sender: NSMenuItem) {
+        let idx = sender.tag
+        guard let char = character(at: idx) else { return }
+        char.adjustSize(by: -10)
+        if idx < charSizeLabelItems.count {
+            charSizeLabelItems[idx].title = "Size: \(Int(char.sizeAdjust)) pt"
+        }
+    }
+
+    @objc func charMoveUp(_ sender: NSMenuItem) {
+        let idx = sender.tag
+        guard let char = character(at: idx) else { return }
+        char.adjustYOffsetExtra(by: 5)
+        if idx < charOffsetLabelItems.count {
+            charOffsetLabelItems[idx].title = "Y Offset: \(Int(char.yOffsetExtra)) pt"
+        }
+    }
+
+    @objc func charMoveDown(_ sender: NSMenuItem) {
+        let idx = sender.tag
+        guard let char = character(at: idx) else { return }
+        char.adjustYOffsetExtra(by: -5)
+        if idx < charOffsetLabelItems.count {
+            charOffsetLabelItems[idx].title = "Y Offset: \(Int(char.yOffsetExtra)) pt"
+        }
+    }
+
+    @objc func charReset(_ sender: NSMenuItem) {
+        let idx = sender.tag
+        guard let char = character(at: idx) else { return }
+        char.resetAdjustments()
+        if idx < charSizeLabelItems.count   { charSizeLabelItems[idx].title   = "Size: 0 pt" }
+        if idx < charOffsetLabelItems.count { charOffsetLabelItems[idx].title = "Y Offset: 0 pt" }
     }
 
     @objc func toggleDebug(_ sender: NSMenuItem) {

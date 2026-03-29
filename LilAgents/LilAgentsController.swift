@@ -10,6 +10,7 @@ class LilAgentsController {
 
     func start() {
         let char1 = WalkerCharacter(videoName: "walk-bruce-01")
+        char1.characterIndex = 0
         char1.accelStart = 3.0
         char1.fullSpeedStart = 3.75
         char1.decelStart = 8.0
@@ -17,6 +18,7 @@ class LilAgentsController {
         char1.walkAmountRange = 0.4...0.65
 
         let char2 = WalkerCharacter(videoName: "walk-jazz-01")
+        char2.characterIndex = 1
         char2.accelStart = 3.9
         char2.fullSpeedStart = 4.5
         char2.decelStart = 8.0
@@ -227,8 +229,8 @@ class LilAgentsController {
         let anyWalking = activeChars.contains { $0.isWalking }
         for char in activeChars {
             if char.isIdleForPopover { continue }
-            if char.isPaused && now >= char.pauseEndTime && anyWalking {
-                char.pauseEndTime = now + Double.random(in: 5.0...10.0)
+            if char.isPaused && now >= char.pauseEndTime && anyWalking && char.walkPauseDelay > 0 {
+                char.pauseEndTime = now + char.walkPauseDelay
             }
         }
         for char in activeChars {
