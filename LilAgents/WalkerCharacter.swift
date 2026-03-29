@@ -60,6 +60,12 @@ class WalkerCharacter {
     // Onboarding
     var isOnboarding = false
 
+    // Proactive suggestion
+    var pendingProactiveSuggestion: ProactiveSuggestion?
+    var proactiveBubbleWindow: NSWindow?
+    private var proactiveBubbleExpiry: CFTimeInterval = 0
+    var pendingProactivePrompt: String?
+
     // Popover state
     var isIdleForPopover = false
     var popoverWindow: NSWindow?
@@ -374,6 +380,11 @@ class WalkerCharacter {
     // MARK: - Click Handling & Popover
 
     func handleClick() {
+        // If a proactive suggestion is waiting, accept it on click
+        if let suggestion = pendingProactiveSuggestion {
+            acceptProactiveSuggestion(suggestion)
+            return
+        }
         if isOnboarding {
             openOnboardingPopover()
             return
@@ -455,9 +466,12 @@ class WalkerCharacter {
         queuePlayer?.pause()
         queuePlayer?.seek(to: .zero)
 
-        // Always clear any bubble (thinking or completion) when popover opens
+        // Always clear any bubble (thinking, completion, or proactive) when popover opens
         showingCompletion = false
         hideBubble()
+        if pendingProactiveSuggestion != nil {
+            dismissProactiveBubble()
+        }
 
         if session == nil {
             let newSession = AgentProvider.current.createSession()
@@ -480,6 +494,12 @@ class WalkerCharacter {
 
         if let terminal = terminalView {
             popoverWindow?.makeFirstResponder(terminal.inputField)
+        }
+
+        // Auto-send proactive prompt if one is queued (ClaudeSession handles pending queue)
+        if let prompt = pendingProactivePrompt {
+            pendingProactivePrompt = nil
+            session?.send(message: prompt)
         }
 
         // Remove old monitors before adding new ones
@@ -527,6 +547,162 @@ class WalkerCharacter {
 
         let delay = Double.random(in: 2.0...5.0)
         pauseEndTime = CACurrentMediaTime() + delay
+    }
+
+    // MARK: - Proactive Suggestion
+
+    func showProactiveSuggestion(_ suggestion: ProactiveSuggestion) {
+        guard !isIdleForPopover else { return }
+        pendingProactiveSuggestion = suggestion
+        proactiveBubbleExpiry = CACurrentMediaTime() + 30.0
+
+        // Pause walking while we show the suggestion
+        if isWalking {
+            isWalking = false
+            isPaused = true
+            queuePlayer?.pause()
+            queuePlayer?.seek(to: .zero)
+        }
+        pauseEndTime = CACurrentMediaTime() + 35.0
+
+        showProactiveBubble(suggestion: suggestion)
+    }
+
+    private func acceptProactiveSuggestion(_ suggestion: ProactiveSuggestion) {
+        pendingProactiveSuggestion = nil
+        proactiveBubbleExpiry = 0
+        dismissProactiveBubble()
+        pendingProactivePrompt = suggestion.promptText
+        openPopover()
+    }
+
+    func dismissProactiveBubble() {
+        proactiveBubbleWindow?.orderOut(nil)
+        proactiveBubbleWindow = nil
+        pendingProactiveSuggestion = nil
+        proactiveBubbleExpiry = 0
+    }
+
+    private func showProactiveBubble(suggestion: ProactiveSuggestion) {
+        let t = resolvedTheme
+
+        let labelFont = NSFont.systemFont(ofSize: 12, weight: .medium)
+        let labelAttr: [NSAttributedString.Key: Any] = [.font: labelFont]
+        let textSize = (suggestion.bubbleText as NSString).size(withAttributes: labelAttr)
+
+        let acceptW: CGFloat = 42
+        let dismissW: CGFloat = 24
+        let padding: CGFloat = 10
+        let gap: CGFloat = 6
+        let totalW = padding + ceil(textSize.width) + gap + acceptW + gap + dismissW + padding
+        let h: CGFloat = 30
+
+        let charFrame = window.frame
+        let x = charFrame.midX - totalW / 2
+        let y = charFrame.origin.y + charFrame.height * 0.9
+
+        if proactiveBubbleWindow == nil {
+            let win = NSWindow(
+                contentRect: CGRect(x: x, y: y, width: totalW, height: h),
+                styleMask: .borderless, backing: .buffered, defer: false
+            )
+            win.isOpaque = false
+            win.backgroundColor = .clear
+            win.hasShadow = true
+            win.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 6)
+            win.ignoresMouseEvents = false
+            win.collectionBehavior = [.moveToActiveSpace, .stationary]
+
+            let container = NSView(frame: NSRect(x: 0, y: 0, width: totalW, height: h))
+            container.wantsLayer = true
+            container.layer?.backgroundColor = t.bubbleBg.cgColor
+            container.layer?.cornerRadius = 14
+            container.layer?.borderWidth = 1
+            container.layer?.borderColor = characterColor.withAlphaComponent(0.6).cgColor
+
+            // Question label
+            let label = NSTextField(labelWithString: suggestion.bubbleText)
+            label.font = labelFont
+            label.textColor = t.textPrimary
+            label.drawsBackground = false
+            label.isBordered = false
+            let labelY = (h - ceil(textSize.height)) / 2 - 1
+            label.frame = NSRect(x: padding, y: labelY, width: ceil(textSize.width), height: ceil(textSize.height) + 2)
+            container.addSubview(label)
+
+            // Accept button "好的"
+            let acceptX = padding + ceil(textSize.width) + gap
+            let acceptBtn = NSButton(frame: NSRect(x: acceptX, y: 5, width: acceptW, height: h - 10))
+            acceptBtn.title = "好的"
+            acceptBtn.font = .systemFont(ofSize: 11, weight: .semibold)
+            acceptBtn.isBordered = false
+            acceptBtn.wantsLayer = true
+            acceptBtn.layer?.backgroundColor = characterColor.withAlphaComponent(0.85).cgColor
+            acceptBtn.layer?.cornerRadius = 7
+            acceptBtn.contentTintColor = .white
+            acceptBtn.target = self
+            acceptBtn.action = #selector(proactiveAcceptTapped)
+            container.addSubview(acceptBtn)
+
+            // Dismiss button "✕"
+            let dismissX = acceptX + acceptW + gap
+            let dismissBtn = NSButton(frame: NSRect(x: dismissX, y: 5, width: dismissW, height: h - 10))
+            dismissBtn.title = "✕"
+            dismissBtn.font = .systemFont(ofSize: 11, weight: .semibold)
+            dismissBtn.isBordered = false
+            dismissBtn.wantsLayer = true
+            dismissBtn.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.15).cgColor
+            dismissBtn.layer?.cornerRadius = 7
+            dismissBtn.contentTintColor = t.textDim
+            dismissBtn.target = self
+            dismissBtn.action = #selector(proactiveDismissTapped)
+            container.addSubview(dismissBtn)
+
+            win.contentView = container
+            proactiveBubbleWindow = win
+        }
+
+        proactiveBubbleWindow?.setFrameOrigin(NSPoint(x: x, y: y))
+        if !(proactiveBubbleWindow?.isVisible ?? false) {
+            proactiveBubbleWindow?.orderFrontRegardless()
+        }
+    }
+
+    @objc private func proactiveAcceptTapped() {
+        guard let suggestion = pendingProactiveSuggestion else { return }
+        acceptProactiveSuggestion(suggestion)
+    }
+
+    @objc private func proactiveDismissTapped() {
+        dismissProactiveBubble()
+        // Resume walking after dismiss
+        pauseEndTime = CACurrentMediaTime() + Double.random(in: 1.0...3.0)
+    }
+
+    private func updateProactiveBubble() {
+        guard pendingProactiveSuggestion != nil else { return }
+        let now = CACurrentMediaTime()
+        if now >= proactiveBubbleExpiry {
+            dismissProactiveBubble()
+            pauseEndTime = CACurrentMediaTime() + Double.random(in: 1.0...3.0)
+            return
+        }
+        // Keep bubble position synced with character
+        if let win = proactiveBubbleWindow, let suggestion = pendingProactiveSuggestion {
+            let labelFont = NSFont.systemFont(ofSize: 12, weight: .medium)
+            let labelAttr: [NSAttributedString.Key: Any] = [.font: labelFont]
+            let textSize = (suggestion.bubbleText as NSString).size(withAttributes: labelAttr)
+            let acceptW: CGFloat = 42
+            let dismissW: CGFloat = 24
+            let padding: CGFloat = 10
+            let gap: CGFloat = 6
+            let totalW = padding + ceil(textSize.width) + gap + acceptW + gap + dismissW + padding
+            let h: CGFloat = 30
+            let charFrame = window.frame
+            let x = charFrame.midX - totalW / 2
+            let y = charFrame.origin.y + charFrame.height * 0.9
+            win.setFrameOrigin(NSPoint(x: x, y: y))
+        }
     }
 
     private func removeEventMonitors() {
@@ -995,6 +1171,7 @@ class WalkerCharacter {
             window.setFrameOrigin(NSPoint(x: x, y: y))
             updatePopoverPosition()
             updateThinkingBubble()
+            updateProactiveBubble()
             return
         }
 
@@ -1040,5 +1217,6 @@ class WalkerCharacter {
         }
 
         updateThinkingBubble()
+        updateProactiveBubble()
     }
 }

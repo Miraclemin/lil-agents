@@ -164,6 +164,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         displayItem.submenu = displayMenu
         menu.addItem(displayItem)
 
+        // Persona
+        let personaItem = NSMenuItem(title: "Persona", action: nil, keyEquivalent: "")
+        let personaMenu = NSMenu()
+        let configureItem = NSMenuItem(title: "Configure Persona…", action: #selector(configurePersona), keyEquivalent: "")
+        personaMenu.addItem(configureItem)
+        personaItem.submenu = personaMenu
+        menu.addItem(personaItem)
+
         menu.addItem(NSMenuItem.separator())
 
         let updateItem = NSMenuItem(title: "Check for Updates…", action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)), keyEquivalent: "")
@@ -359,6 +367,105 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func quitApp() {
         NSApp.terminate(nil)
+    }
+
+    // MARK: - Persona Configuration
+
+    private var personaPanel: NSPanel?
+    private weak var personaDescView: NSTextView?
+
+    @objc func configurePersona() {
+        if let existing = personaPanel, existing.isVisible {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let panelW: CGFloat = 360
+        let panelH: CGFloat = 250
+
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: panelW, height: panelH),
+            styleMask: [.titled, .closable, .utilityWindow],
+            backing: .buffered,
+            defer: false
+        )
+        panel.title = "Configure Persona"
+        panel.isFloatingPanel = true
+        panel.center()
+
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: panelW, height: panelH))
+
+        // Name field
+        let nameLabel = NSTextField(labelWithString: "Name")
+        nameLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        nameLabel.frame = NSRect(x: 20, y: 195, width: 320, height: 16)
+        container.addSubview(nameLabel)
+
+        let nameField = NSTextField(frame: NSRect(x: 20, y: 168, width: 320, height: 22))
+        nameField.placeholderString = "例如：Alex"
+        nameField.stringValue = PersonaConfig.name
+        nameField.tag = 300
+        container.addSubview(nameField)
+
+        // Personality description
+        let descLabel = NSTextField(labelWithString: "Personality")
+        descLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        descLabel.frame = NSRect(x: 20, y: 142, width: 320, height: 16)
+        container.addSubview(descLabel)
+
+        let scrollView = NSScrollView(frame: NSRect(x: 20, y: 60, width: 320, height: 78))
+        scrollView.hasVerticalScroller = true
+        scrollView.borderType = .bezelBorder
+        let descField = NSTextView(frame: NSRect(x: 0, y: 0, width: 320, height: 78))
+        descField.string = PersonaConfig.personalityDescription
+        descField.font = .systemFont(ofSize: 12)
+        descField.isEditable = true
+        descField.isRichText = false
+        personaDescView = descField
+        scrollView.documentView = descField
+        container.addSubview(scrollView)
+
+        let hint = NSTextField(labelWithString: "例如：直接坦率，有点毒舌但很关心我，说话轻松随意")
+        hint.font = .systemFont(ofSize: 10)
+        hint.textColor = .secondaryLabelColor
+        hint.frame = NSRect(x: 20, y: 40, width: 320, height: 16)
+        container.addSubview(hint)
+
+        // Save button
+        let saveBtn = NSButton(title: "Save", target: nil, action: #selector(savePersona(_:)))
+        saveBtn.bezelStyle = .rounded
+        saveBtn.keyEquivalent = "\r"
+        saveBtn.frame = NSRect(x: panelW - 100, y: 12, width: 80, height: 22)
+        saveBtn.tag = 302
+        container.addSubview(saveBtn)
+
+        panel.contentView = container
+        panel.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        personaPanel = panel
+    }
+
+    @objc func savePersona(_ sender: NSButton) {
+        guard let panel = personaPanel,
+              let container = panel.contentView else { return }
+
+        if let nameField = container.viewWithTag(300) as? NSTextField {
+            PersonaConfig.name = nameField.stringValue
+        }
+        if let descField = personaDescView {
+            PersonaConfig.personalityDescription = descField.string
+        }
+
+        // Restart Claude sessions so persona takes effect immediately
+        controller?.characters.forEach { char in
+            char.session?.terminate()
+            char.session = nil
+            if char.isIdleForPopover { char.closePopover() }
+        }
+
+        personaPanel?.close()
+        personaPanel = nil
     }
 }
 

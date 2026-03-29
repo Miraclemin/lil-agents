@@ -8,6 +8,9 @@ class LilAgentsController {
     private static let onboardingKey = "hasCompletedOnboarding"
     private var isHiddenForEnvironment = false
 
+    let screenObserver = ScreenObserver()
+    let triggerEngine  = ProactiveTriggerEngine()
+
     func start() {
         let char1 = WalkerCharacter(videoName: "walk-bruce-01")
         char1.characterIndex = 0
@@ -43,6 +46,12 @@ class LilAgentsController {
 
         characters = [char1, char2]
         characters.forEach { $0.controller = self }
+
+        // Wire proactive engine
+        triggerEngine.controller = self
+        screenObserver.engine = triggerEngine
+        screenObserver.start()
+        ScreenObserver.requestAccessibilityPermissionIfNeeded()
 
         setupDebugLine()
         startDisplayLink()
@@ -247,5 +256,6 @@ class LilAgentsController {
         if let displayLink = displayLink {
             CVDisplayLinkStop(displayLink)
         }
+        screenObserver.stop()
     }
 }

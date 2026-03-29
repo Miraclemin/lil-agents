@@ -51,13 +51,17 @@ class ClaudeSession: AgentSession {
     private func launchProcess(binaryPath: String) {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: binaryPath)
-        proc.arguments = [
+        var args: [String] = [
             "-p",
             "--output-format", "stream-json",
             "--input-format", "stream-json",
             "--verbose",
             "--dangerously-skip-permissions"
         ]
+        if let systemPrompt = PersonaConfig.systemPromptString {
+            args += ["--system-prompt", systemPrompt]
+        }
+        proc.arguments = args
         proc.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
         proc.environment = ShellEnvironment.processEnvironment()
 

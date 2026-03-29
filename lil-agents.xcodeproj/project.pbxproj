@@ -23,6 +23,9 @@
 		A10000010000000000000032 /* ShellEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000031 /* ShellEnvironment.swift */; };
 		A10000010000000000000033 /* CodexSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000032 /* CodexSession.swift */; };
 		A10000010000000000000034 /* CopilotSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000033 /* CopilotSession.swift */; };
+		A10000010000000000000035 /* PersonaConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000034 /* PersonaConfig.swift */; };
+		A10000010000000000000036 /* ScreenObserver.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000035 /* ScreenObserver.swift */; };
+		A10000010000000000000037 /* ProactiveTriggerEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000036 /* ProactiveTriggerEngine.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -43,6 +46,9 @@
 		A10000020000000000000031 /* ShellEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShellEnvironment.swift; sourceTree = "<group>"; };
 		A10000020000000000000032 /* CodexSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexSession.swift; sourceTree = "<group>"; };
 		A10000020000000000000033 /* CopilotSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CopilotSession.swift; sourceTree = "<group>"; };
+		A10000020000000000000034 /* PersonaConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonaConfig.swift; sourceTree = "<group>"; };
+		A10000020000000000000035 /* ScreenObserver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenObserver.swift; sourceTree = "<group>"; };
+		A10000020000000000000036 /* ProactiveTriggerEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProactiveTriggerEngine.swift; sourceTree = "<group>"; };
 		A10000030000000000000001 /* lil agents.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "lil agents.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -80,6 +86,9 @@
 				A10000020000000000000023 /* TerminalView.swift */,
 				A10000020000000000000024 /* WalkerCharacter.swift */,
 				A10000020000000000000025 /* LilAgentsController.swift */,
+				A10000020000000000000034 /* PersonaConfig.swift */,
+				A10000020000000000000035 /* ScreenObserver.swift */,
+				A10000020000000000000036 /* ProactiveTriggerEngine.swift */,
 				A10000020000000000000002 /* walk-bruce-01.mov */,
 				A10000020000000000000005 /* walk-jazz-01.mov */,
 				A10000020000000000000007 /* Assets.xcassets */,
@@ -187,6 +196,9 @@
 				A10000010000000000000023 /* TerminalView.swift in Sources */,
 				A10000010000000000000024 /* WalkerCharacter.swift in Sources */,
 				A10000010000000000000025 /* LilAgentsController.swift in Sources */,
+				A10000010000000000000035 /* PersonaConfig.swift in Sources */,
+				A10000010000000000000036 /* ScreenObserver.swift in Sources */,
+				A10000010000000000000037 /* ProactiveTriggerEngine.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
