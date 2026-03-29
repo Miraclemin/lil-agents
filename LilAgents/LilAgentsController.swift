@@ -11,6 +11,84 @@ class LilAgentsController {
     let screenObserver = ScreenObserver()
     let triggerEngine  = ProactiveTriggerEngine()
 
+    // MARK: - Dynamic Agent Management
+
+    private static let extraAgentsKey = "extraAgentImagePaths"
+
+    /// Adds a new agent whose sprite is an image at `imageURL`.
+    /// The image is copied to Application Support so it persists.
+    @discardableResult
+    func addAgent(imageURL: URL) -> WalkerCharacter? {
+        // Copy image to app support directory so it survives the original being moved/deleted
+        let fm = FileManager.default
+        guard let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
+        let agentsDir = appSupport.appendingPathComponent("LilAgents/ExtraAgents", isDirectory: true)
+        try? fm.createDirectory(at: agentsDir, withIntermediateDirectories: true)
+
+        let destURL = agentsDir.appendingPathComponent("\(UUID().uuidString).\(imageURL.pathExtension)")
+        try? fm.copyItem(at: imageURL, to: destURL)
+
+        let newChar = makeExtraCharacter(imagePath: destURL.path, index: characters.count)
+        characters.append(newChar)
+        newChar.controller = self
+        saveExtraAgents()
+        return newChar
+    }
+
+    /// Removes the agent at `index` (must be >= 2 — Bruce and Jazz cannot be removed).
+    func removeAgent(at index: Int) {
+        guard index >= 2, index < characters.count else { return }
+        let char = characters[index]
+        // Clean up persisted image
+        if let saved = UserDefaults.standard.string(forKey: "walkerChar_\(index)_imagePath") {
+            try? FileManager.default.removeItem(atPath: saved)
+        }
+        char.window.orderOut(nil)
+        char.proactiveBubbleWindow?.orderOut(nil)
+        characters.remove(at: index)
+        // Re-index remaining extra characters
+        for i in index..<characters.count {
+            characters[i].characterIndex = i
+        }
+        saveExtraAgents()
+    }
+
+    func loadExtraAgents() {
+        let paths = UserDefaults.standard.stringArray(forKey: Self.extraAgentsKey) ?? []
+        for (offset, path) in paths.enumerated() {
+            let index = 2 + offset
+            let char = makeExtraCharacter(imagePath: path, index: index)
+            characters.append(char)
+            char.controller = self
+        }
+    }
+
+    func saveExtraAgents() {
+        let paths = characters.dropFirst(2).compactMap { char -> String? in
+            UserDefaults.standard.string(forKey: "walkerChar_\(char.characterIndex)_imagePath")
+        }
+        UserDefaults.standard.set(paths, forKey: Self.extraAgentsKey)
+    }
+
+    private func makeExtraCharacter(imagePath: String, index: Int) -> WalkerCharacter {
+        let char = WalkerCharacter(videoName: "walk-bruce-01") // fallback video; image overrides
+        char.characterIndex = index
+        char.accelStart = 3.0
+        char.fullSpeedStart = 3.75
+        char.decelStart = 8.0
+        char.walkStop = 8.5
+        char.walkAmountRange = 0.4...0.65
+        char.positionProgress = Double.random(in: 0.1...0.9)
+        char.pauseEndTime = CACurrentMediaTime() + Double.random(in: 1.0...6.0)
+        char.setup()
+        // Override with custom image
+        let url = URL(fileURLWithPath: imagePath)
+        char.setCustomImage(url: url)
+        // Persist the image path under a dedicated key so we can restore it
+        UserDefaults.standard.set(imagePath, forKey: "walkerChar_\(index)_imagePath")
+        return char
+    }
+
     func start() {
         let char1 = WalkerCharacter(videoName: "walk-bruce-01")
         char1.characterIndex = 0
@@ -46,6 +124,8 @@ class LilAgentsController {
 
         characters = [char1, char2]
         characters.forEach { $0.controller = self }
+
+        loadExtraAgents()
 
         // Wire proactive engine
         triggerEngine.controller = self

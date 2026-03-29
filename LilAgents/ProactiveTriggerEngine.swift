@@ -25,11 +25,23 @@ class ProactiveTriggerEngine {
     private let globalCooldown: TimeInterval  = 10
     private let typeCooldown:   TimeInterval  = 30
 
+    // Round-robin index for proactive triggers
+    private var lastProactiveIndex: Int = 0
+
     // MARK: - Event Handlers (called by ScreenObserver)
 
     func clipboardChanged(content: String) {
         // No cooldown for clipboard — every copy that matches a rule fires immediately.
         guard let suggestion = makeClipboardSuggestion(content: content) else { return }
+        fire(suggestion: suggestion, allowReplace: true)
+    }
+
+    func clipboardImageChanged() {
+        let suggestion = ProactiveSuggestion(
+            bubbleText: "截图了？帮你看看",
+            promptText: "我刚截了一张图，描述一下截图里有什么内容，或者告诉我你想问什么，我来帮你分析",
+            typeKey: "clipboard_image"
+        )
         fire(suggestion: suggestion, allowReplace: true)
     }
 
@@ -94,58 +106,74 @@ class ProactiveTriggerEngine {
     // MARK: - App Context Suggestions
 
     private func makeAppContextSuggestion(appName: String, content: AccessibleContent) -> ProactiveSuggestion? {
+        guard let rule = AppContextSettings.matchingRule(for: appName) else { return nil }
         let lower = appName.lowercased()
         let title = content.windowTitle
+        let text  = content.bestAvailableText  // selected text, or visible element text
 
-        if lower.contains("xcode") || lower.contains("android studio") || lower.contains("cursor") {
+        func expand(_ template: String) -> String {
+            var result = template
+                .replacingOccurrences(of: "%app%", with: appName)
+                .replacingOccurrences(of: "%title%", with: title)
+            if !text.isEmpty {
+                result += "\n\n当前内容：\n```\n\(text)\n```"
+            }
+            return result
+        }
+
+        // Terminal: if there's visible text, offer a "explain / help" suggestion
+        if rule.id == "terminal" && !text.isEmpty {
+            return ProactiveSuggestion(
+                bubbleText: "需要命令帮助？",
+                promptText: "我在终端里执行了以下内容，帮我解释或提供建议：\n```\n\(text)\n```",
+                typeKey: "appContext_\(lower)"
+            )
+        }
+
+        // IDE: prefer error-specific suggestion if window title or visible text signals an error
+        if rule.id == "ide" && rule.suggestions.count >= 2 {
             let titleLower = title.lowercased()
-            if titleLower.contains("error") || titleLower.contains("failed") || titleLower.contains("warning") {
+            let textLower  = text.lowercased()
+            let hasError = ["error", "failed", "warning"].contains {
+                titleLower.contains($0) || textLower.contains($0)
+            }
+            if hasError {
+                let s = rule.suggestions[0]
+                return ProactiveSuggestion(bubbleText: s.bubble, promptText: expand(s.prompt), typeKey: "appContext_\(lower)")
+            }
+            let s = rule.suggestions[1]
+            return ProactiveSuggestion(bubbleText: s.bubble, promptText: expand(s.prompt), typeKey: "appContext_\(lower)")
+        }
+
+        // Browser: skip if the window title is empty or equals the app name
+        // (means no page is loaded / new-tab page)
+        if rule.id == "browser" {
+            let cleanTitle = title
+                .replacingOccurrences(of: "— Safari", with: "")
+                .replacingOccurrences(of: "- Google Chrome", with: "")
+                .replacingOccurrences(of: "— Mozilla Firefox", with: "")
+                .replacingOccurrences(of: "- Microsoft Edge", with: "")
+                .trimmingCharacters(in: .whitespaces)
+            guard !cleanTitle.isEmpty,
+                  cleanTitle.lowercased() != appName.lowercased() else { return nil }
+
+            // If we have actual page text, build a richer prompt
+            if !text.isEmpty {
+                let truncated = String(text.prefix(2000))
                 return ProactiveSuggestion(
-                    bubbleText: "遇到报错了？",
-                    promptText: "我在用 \(appName) 开发，当前窗口提示 \"\(title)\"，帮我分析一下可能是什么问题，怎么解决",
+                    bubbleText: "帮你解释这个？",
+                    promptText: "我在浏览器里看这个页面：「\(cleanTitle)」\n\n以下是页面的主要内容：\n\n\(truncated)\n\n请帮我解释关键内容，或者我有问题可以直接问你",
                     typeKey: "appContext_\(lower)"
                 )
             }
-            return ProactiveSuggestion(
-                bubbleText: "需要帮忙吗？",
-                promptText: "我在用 \(appName) 开发，当前工作在 \"\(title)\"，有什么可以帮你的？",
-                typeKey: "appContext_\(lower)"
-            )
+
+            // No page text — fall back to title-only suggestion
+            let s = rule.suggestions[0]
+            return ProactiveSuggestion(bubbleText: s.bubble, promptText: expand(s.prompt), typeKey: "appContext_\(lower)")
         }
 
-        if lower.contains("mail") || lower.contains("outlook") || lower.contains("spark") {
-            return ProactiveSuggestion(
-                bubbleText: "帮你写邮件？",
-                promptText: "我在写邮件，帮我起草一段专业、简洁的回复内容",
-                typeKey: "appContext_\(lower)"
-            )
-        }
-
-        if lower.contains("notion") || lower.contains("obsidian") || lower.contains("typora") || lower.contains("bear") {
-            return ProactiveSuggestion(
-                bubbleText: "帮你整理思路？",
-                promptText: "我在写文档，标题是 \"\(title)\"，帮我梳理一下内容结构或者补充一些想法",
-                typeKey: "appContext_\(lower)"
-            )
-        }
-
-        if lower.contains("keynote") || lower.contains("powerpoint") || lower.contains("canva") {
-            return ProactiveSuggestion(
-                bubbleText: "要优化内容吗？",
-                promptText: "我在做演示文稿 \"\(title)\"，帮我检查和优化文案，让表达更清晰",
-                typeKey: "appContext_\(lower)"
-            )
-        }
-
-        if lower.contains("terminal") || lower.contains("iterm") || lower.contains("warp") {
-            return ProactiveSuggestion(
-                bubbleText: "需要命令帮助？",
-                promptText: "我在使用终端 \"\(title)\"，有什么命令或者操作需要帮忙吗？",
-                typeKey: "appContext_\(lower)"
-            )
-        }
-
-        return nil
+        let s = rule.suggestions[0]
+        return ProactiveSuggestion(bubbleText: s.bubble, promptText: expand(s.prompt), typeKey: "appContext_\(lower)")
     }
 
     // MARK: - Cooldown
@@ -168,14 +196,24 @@ class ProactiveTriggerEngine {
         lastTriggerTypeTime[suggestion.typeKey] = now
 
         DispatchQueue.main.async { [weak self] in
-            guard let controller = self?.controller else { return }
-            // Prefer a character that has no pending suggestion; fall back to
-            // replacing an existing one when allowReplace is true.
-            let target = controller.characters.first {
-                $0.isManuallyVisible && !$0.isIdleForPopover && $0.pendingProactiveSuggestion == nil
-            } ?? (allowReplace ? controller.characters.first {
-                $0.isManuallyVisible && !$0.isIdleForPopover
-            } : nil)
+            guard let self = self, let controller = self.controller else { return }
+            let eligible = controller.characters.filter { $0.window.isVisible && $0.isManuallyVisible && !$0.isIdleForPopover }
+            guard !eligible.isEmpty else { return }
+
+            // Round-robin: pick the next character in rotation
+            let idx = self.lastProactiveIndex % eligible.count
+            self.lastProactiveIndex = (idx + 1) % eligible.count
+            let candidate = eligible[idx]
+
+            let target: WalkerCharacter?
+            if candidate.pendingProactiveSuggestion == nil {
+                target = candidate
+            } else if allowReplace {
+                target = candidate
+            } else {
+                // Candidate is busy and we can't replace — try others
+                target = eligible.first { $0.pendingProactiveSuggestion == nil }
+            }
             target?.showProactiveSuggestion(suggestion)
         }
     }

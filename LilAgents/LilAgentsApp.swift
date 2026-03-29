@@ -24,11 +24,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var charRemoveImageItems: [NSMenuItem] = []
     var charMirrorImageItems: [NSMenuItem] = []
 
+    // Dynamic agent menu items (inserted before separator before Sounds)
+    var dynamicAgentMenuItems: [NSMenuItem] = []
+    weak var mainMenu: NSMenu?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         controller = LilAgentsController()
         controller?.start()
         setupMenuBar()
+        // Rebuild dynamic agent menu items for any agents loaded from persistence
+        if let extras = controller?.characters.dropFirst(2) {
+            for char in extras {
+                insertDynamicAgentMenuItem(for: char)
+            }
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -123,6 +133,57 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
+        // Smart Suggestions submenu
+        let suggestItem = NSMenuItem(title: "Smart Suggestions", action: nil, keyEquivalent: "")
+        let suggestMenu = NSMenu()
+
+        // Context Timer sub-submenu
+        let timerItem = NSMenuItem(title: "Context Timer", action: nil, keyEquivalent: "")
+        let timerMenu = NSMenu()
+        for option in AppContextSettings.timerOptions {
+            let item = NSMenuItem(title: option.label, action: #selector(setContextTimer(_:)), keyEquivalent: "")
+            item.representedObject = option.seconds as AnyObject
+            item.state = AppContextSettings.timerDuration == option.seconds ? .on : .off
+            timerMenu.addItem(item)
+        }
+        timerItem.submenu = timerMenu
+        suggestMenu.addItem(timerItem)
+
+        suggestMenu.addItem(NSMenuItem.separator())
+
+        // App checkboxes
+        let appsLabel = NSMenuItem(title: "Trigger Apps:", action: nil, keyEquivalent: "")
+        appsLabel.isEnabled = false
+        suggestMenu.addItem(appsLabel)
+        for rule in AppContextSettings.allRules {
+            let item = NSMenuItem(title: rule.displayName, action: #selector(toggleAppRule(_:)), keyEquivalent: "")
+            item.representedObject = rule.id as AnyObject
+            item.state = AppContextSettings.isRuleEnabled(rule.id) ? .on : .off
+            suggestMenu.addItem(item)
+        }
+
+        suggestItem.submenu = suggestMenu
+        menu.addItem(suggestItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        // "+ Add Agent…" button
+        let addAgentItem = NSMenuItem(title: "+ Add Agent…", action: #selector(addAgent(_:)), keyEquivalent: "")
+        menu.addItem(addAgentItem)
+
+        let axDiagItem = NSMenuItem(title: "Check AX Permission…", action: #selector(checkAX(_:)), keyEquivalent: "")
+        menu.addItem(axDiagItem)
+
+        let browserDiagItem = NSMenuItem(title: "Test Browser Content…", action: #selector(testBrowser(_:)), keyEquivalent: "")
+        menu.addItem(browserDiagItem)
+
+        // Placeholder separator for dynamic agent items (they are inserted here at runtime)
+        let dynamicSep = NSMenuItem.separator()
+        dynamicSep.tag = 999  // marker for the dynamic section
+        menu.addItem(dynamicSep)
+
+        menu.addItem(NSMenuItem.separator())
+
         let soundItem = NSMenuItem(title: "Sounds", action: #selector(toggleSounds(_:)), keyEquivalent: "")
         soundItem.state = .on
         menu.addItem(soundItem)
@@ -182,6 +243,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(quitItem)
 
         statusItem?.menu = menu
+        mainMenu = menu
     }
 
     // MARK: - Menu Actions
@@ -361,6 +423,85 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func toggleSounds(_ sender: NSMenuItem) {
         WalkerCharacter.soundsEnabled.toggle()
         sender.state = WalkerCharacter.soundsEnabled ? .on : .off
+    }
+
+    // MARK: - Smart Suggestions Actions
+
+    @objc func checkAX(_ sender: NSMenuItem) {
+        controller?.screenObserver.showDiagnostic()
+    }
+
+    @objc func testBrowser(_ sender: NSMenuItem) {
+        controller?.screenObserver.showBrowserDiagnostic()
+    }
+
+    @objc func setContextTimer(_ sender: NSMenuItem) {
+        guard let seconds = sender.representedObject as? TimeInterval else { return }
+        AppContextSettings.timerDuration = seconds
+        if let timerMenu = sender.menu {
+            for item in timerMenu.items { item.state = .off }
+        }
+        sender.state = .on
+    }
+
+    @objc func toggleAppRule(_ sender: NSMenuItem) {
+        guard let ruleId = sender.representedObject as? String else { return }
+        let newState = sender.state != .on
+        AppContextSettings.setRuleEnabled(ruleId, enabled: newState)
+        sender.state = newState ? .on : .off
+    }
+
+    // MARK: - Dynamic Agent Actions
+
+    @objc func addAgent(_ sender: NSMenuItem) {
+        let panel = NSOpenPanel()
+        panel.title = "Choose agent image"
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [.png, .gif, .jpeg]
+        panel.begin { [weak self] response in
+            guard response == .OK, let url = panel.url, let self = self else { return }
+            guard let newChar = self.controller?.addAgent(imageURL: url) else { return }
+            DispatchQueue.main.async {
+                self.insertDynamicAgentMenuItem(for: newChar)
+            }
+        }
+    }
+
+    @objc func removeDynamicAgent(_ sender: NSMenuItem) {
+        let idx = sender.tag
+        controller?.removeAgent(at: idx)
+        rebuildDynamicAgentMenuItems()
+    }
+
+    private func rebuildDynamicAgentMenuItems() {
+        guard let menu = mainMenu else { return }
+        for item in dynamicAgentMenuItems { menu.removeItem(item) }
+        dynamicAgentMenuItems.removeAll()
+        if let extras = controller?.characters.dropFirst(2) {
+            for char in extras { insertDynamicAgentMenuItem(for: char) }
+        }
+    }
+
+    private func insertDynamicAgentMenuItem(for char: WalkerCharacter) {
+        guard let menu = mainMenu else { return }
+        let idx = char.characterIndex
+
+        // Find the dynamic section marker separator (tag 999)
+        guard let markerIdx = menu.items.firstIndex(where: { $0.tag == 999 }) else { return }
+
+        let agentItem = NSMenuItem(title: "Agent \(idx)", action: nil, keyEquivalent: "")
+        let agentMenu = NSMenu()
+
+        let removeItem = NSMenuItem(title: "Remove Agent", action: #selector(removeDynamicAgent(_:)), keyEquivalent: "")
+        removeItem.tag = idx
+        agentMenu.addItem(removeItem)
+
+        agentItem.submenu = agentMenu
+        agentItem.tag = idx
+
+        menu.insertItem(agentItem, at: markerIdx)
+        dynamicAgentMenuItems.append(agentItem)
     }
 
     @objc func quitApp() {

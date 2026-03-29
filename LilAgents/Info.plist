@@ -6,6 +6,8 @@
 	<true/>
 	<key>NSAccessibilityUsageDescription</key>
 	<string>Lil Agents uses Accessibility to read your current app context so it can proactively offer help.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Lil Agents uses Automation to read the current browser page content so it can offer relevant help.</string>
 	<key>SUAllowsAutomaticUpdates</key>
 	<true/>
 	<key>SUEnableAutomaticChecks</key>

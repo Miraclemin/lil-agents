@@ -7,6 +7,14 @@ struct AccessibleContent {
     var appName: String = ""
     var windowTitle: String = ""
     var selectedText: String = ""
+    /// Best-effort visible/typed text from the focused element (e.g. terminal buffer,
+    /// source editor). Populated only when selectedText is empty.
+    var visibleText: String = ""
+
+    /// Returns selectedText if non-empty, otherwise visibleText.
+    var bestAvailableText: String {
+        selectedText.isEmpty ? visibleText : selectedText
+    }
 }
 
 // MARK: - ScreenObserver
@@ -67,6 +75,12 @@ class ScreenObserver {
         guard current != clipboardChangeCount else { return }
         clipboardChangeCount = current
 
+        // Image in clipboard (screenshot or copied image) — check before text
+        if NSImage(pasteboard: NSPasteboard.general) != nil {
+            engine?.clipboardImageChanged()
+            return
+        }
+
         guard let raw = NSPasteboard.general.string(forType: .string) else { return }
         let content = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard content.count > 15 else { return }
@@ -89,10 +103,28 @@ class ScreenObserver {
 
         // After 15 seconds in the same app, do a context check (free via Accessibility API)
         let capturedName = name
-        appContextTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: false) { [weak self] _ in
+        appContextTimer = Timer.scheduledTimer(withTimeInterval: AppContextSettings.timerDuration, repeats: false) { [weak self] _ in
             guard let self = self else { return }
-            let content = self.getAccessibleContent()
-            self.engine?.appContextAvailable(appName: capturedName, content: content)
+            guard let current = NSWorkspace.shared.frontmostApplication,
+                  current.localizedName == capturedName else { return }
+
+            let baseContent = self.getAccessibleContent()
+            let isBrowser = AppContextSettings.matchingRule(for: capturedName)?.id == "browser"
+
+            if isBrowser {
+                // AppleScript is blocking — run on background thread
+                DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                    guard let self = self else { return }
+                    let pageText = self.browserPageText(for: capturedName)
+                    var content = baseContent
+                    if let t = pageText { content.visibleText = t }
+                    DispatchQueue.main.async {
+                        self.engine?.appContextAvailable(appName: capturedName, content: content)
+                    }
+                }
+            } else {
+                self.engine?.appContextAvailable(appName: capturedName, content: baseContent)
+            }
         }
     }
 
@@ -106,25 +138,35 @@ class ScreenObserver {
         result.appName = app.localizedName ?? ""
         let axApp = AXUIElementCreateApplication(app.processIdentifier)
 
-        // Window title
-        var windowRef: CFTypeRef?
-        if AXUIElementCopyAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, &windowRef) == .success,
-           let windowRef = windowRef {
-            let axWindow = windowRef as! AXUIElement
-            var titleRef: CFTypeRef?
-            if AXUIElementCopyAttributeValue(axWindow, kAXTitleAttribute as CFString, &titleRef) == .success {
-                result.windowTitle = (titleRef as? String) ?? ""
-            }
-        }
+        // Window title — try three sources in order:
+        // 1. Focused window (may be a panel with no title in complex apps like Xcode)
+        // 2. Main window (the primary document window)
+        // 3. First window in the windows list
+        result.windowTitle = axWindowTitle(axApp, kAXFocusedWindowAttribute)
+            ?? axWindowTitle(axApp, kAXMainWindowAttribute)
+            ?? axWindowTitleFromList(axApp)
+            ?? ""
 
-        // Selected text in focused element
+        // Selected text and visible content from the focused element
         var elementRef: CFTypeRef?
         if AXUIElementCopyAttributeValue(axApp, kAXFocusedUIElementAttribute as CFString, &elementRef) == .success,
            let elementRef = elementRef {
             let axElement = elementRef as! AXUIElement
+
             var selRef: CFTypeRef?
             if AXUIElementCopyAttributeValue(axElement, kAXSelectedTextAttribute as CFString, &selRef) == .success {
                 result.selectedText = (selRef as? String) ?? ""
+            }
+
+            // When nothing is selected, fall back to the element's full text value.
+            // This captures terminal buffer text, Xcode editor content, etc.
+            if result.selectedText.isEmpty {
+                var valRef: CFTypeRef?
+                if AXUIElementCopyAttributeValue(axElement, kAXValueAttribute as CFString, &valRef) == .success,
+                   let raw = valRef as? String, !raw.isEmpty {
+                    // Keep only the last 2 000 chars to avoid huge prompts
+                    result.visibleText = String(raw.suffix(2000))
+                }
             }
         }
 
@@ -133,5 +175,184 @@ class ScreenObserver {
 
     func getSelectedText() -> String {
         getAccessibleContent().selectedText
+    }
+
+    // MARK: - AX Helpers
+
+    private func axWindowTitle(_ axApp: AXUIElement, _ attribute: String) -> String? {
+        var ref: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(axApp, attribute as CFString, &ref) == .success,
+              let ref = ref else { return nil }
+        let axWin = ref as! AXUIElement
+        var titleRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(axWin, kAXTitleAttribute as CFString, &titleRef) == .success,
+              let t = titleRef as? String, !t.isEmpty else { return nil }
+        return t
+    }
+
+    private func axWindowTitleFromList(_ axApp: AXUIElement) -> String? {
+        var ref: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &ref) == .success,
+              let ref = ref else { return nil }
+        // CFArray does NOT bridge directly to [AXUIElement] — must use raw CF iteration
+        let cfArr = ref as! CFArray
+        let count = CFArrayGetCount(cfArr)
+        for i in 0..<count {
+            guard let rawPtr = CFArrayGetValueAtIndex(cfArr, i) else { continue }
+            let axWin = Unmanaged<AXUIElement>.fromOpaque(rawPtr).takeUnretainedValue()
+            var titleRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(axWin, kAXTitleAttribute as CFString, &titleRef) == .success,
+               let t = titleRef as? String, !t.isEmpty {
+                return t
+            }
+        }
+        return nil
+    }
+
+    // MARK: - Browser Page Content (AppleScript)
+
+    /// Returns the URL of the active tab in the frontmost browser window.
+    /// Safe to call from a background thread (spawns osascript as a child process).
+    func browserPageText(for appName: String) -> String? {
+        let lower = appName.lowercased()
+
+        let script: String
+        if lower.contains("safari") {
+            script = """
+                tell application "Safari"
+                    if (count of windows) > 0 then
+                        return URL of current tab of front window
+                    end if
+                end tell
+            """
+        } else if lower.contains("chrome") {
+            script = """
+                tell application "Google Chrome"
+                    if (count of windows) > 0 then
+                        return URL of active tab of first window
+                    end if
+                end tell
+            """
+        } else if lower.contains("arc") {
+            script = """
+                tell application "Arc"
+                    if (count of windows) > 0 then
+                        return URL of active tab of first window
+                    end if
+                end tell
+            """
+        } else if lower.contains("firefox") {
+            script = """
+                tell application "Firefox"
+                    if (count of windows) > 0 then
+                        return URL of active tab of first window
+                    end if
+                end tell
+            """
+        } else {
+            return nil
+        }
+
+        guard let url = runOsascript(script) else { return nil }
+        return "页面地址：\(url)"
+    }
+
+    private func runOsascript(_ source: String) -> String? {
+        let task = Process()
+        task.launchPath = "/usr/bin/osascript"
+        task.arguments = ["-e", source]
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        task.standardOutput = outPipe
+        task.standardError  = errPipe
+        do {
+            try task.run()
+            task.waitUntilExit()
+        } catch {
+            NSLog("[LilAgents] osascript launch failed: \(error)")
+            return nil
+        }
+        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        if let errText = String(data: errData, encoding: .utf8), !errText.isEmpty {
+            NSLog("[LilAgents] osascript error: \(errText.trimmingCharacters(in: .whitespacesAndNewlines))")
+        }
+        let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+        let text = String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        NSLog("[LilAgents] osascript output (\(text.count) chars): \(text.prefix(200))")
+        return text.isEmpty ? nil : text
+    }
+
+    // MARK: - Diagnostic
+
+    /// Directly tests browser page content fetch and shows result.
+    func showBrowserDiagnostic() {
+        guard let app = NSWorkspace.shared.frontmostApplication else {
+            showAlert("Browser Diagnostic", "No frontmost application found.")
+            return
+        }
+        let name = app.localizedName ?? "unknown"
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            let result = self.browserPageText(for: name) ?? "(nil — see Console.app for [LilAgents] logs)"
+            DispatchQueue.main.async {
+                self.showAlert("Browser Diagnostic — \(name)",
+                               "Page text (\(result.count) chars):\n\n\(result.prefix(500))")
+            }
+        }
+    }
+
+    private func showAlert(_ title: String, _ body: String) {
+        let a = NSAlert()
+        a.messageText = title
+        a.informativeText = body
+        a.addButton(withTitle: "OK")
+        a.runModal()
+    }
+
+    /// Call from menu to show current AX status in an alert.
+    func showDiagnostic() {
+        let hasPerm = Self.hasAccessibilityPermission
+        var lines: [String] = ["AX Permission: \(hasPerm ? "✅ granted" : "❌ NOT granted")"]
+
+        if hasPerm, let app = NSWorkspace.shared.frontmostApplication {
+            lines.append("Frontmost app: \(app.localizedName ?? "?")")
+            let axApp = AXUIElementCreateApplication(app.processIdentifier)
+
+            let focused  = axWindowTitle(axApp, kAXFocusedWindowAttribute) ?? "(none)"
+            let main     = axWindowTitle(axApp, kAXMainWindowAttribute)    ?? "(none)"
+            let fromList = axWindowTitleFromList(axApp)                     ?? "(none)"
+            lines.append("Focused window title : \(focused)")
+            lines.append("Main window title    : \(main)")
+            lines.append("Window list title    : \(fromList)")
+
+            // Focused element value (first 200 chars)
+            var elemRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(axApp, kAXFocusedUIElementAttribute as CFString, &elemRef) == .success,
+               let elemRef = elemRef {
+                let axEl = elemRef as! AXUIElement
+                var valRef: CFTypeRef?
+                if AXUIElementCopyAttributeValue(axEl, kAXValueAttribute as CFString, &valRef) == .success,
+                   let v = valRef as? String {
+                    lines.append("Focused element value: \(String(v.prefix(200)))")
+                } else {
+                    lines.append("Focused element value: (none / not readable)")
+                }
+            }
+        }
+
+        DispatchQueue.main.async {
+            let alert = NSAlert()
+            alert.messageText = "AX Diagnostic"
+            alert.informativeText = lines.joined(separator: "\n")
+            alert.addButton(withTitle: "OK")
+            if !Self.hasAccessibilityPermission {
+                alert.addButton(withTitle: "Open System Settings")
+            }
+            let resp = alert.runModal()
+            if resp == .alertSecondButtonReturn {
+                Self.requestAccessibilityPermissionIfNeeded()
+            }
+        }
     }
 }
