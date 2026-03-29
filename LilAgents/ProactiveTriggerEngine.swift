@@ -19,11 +19,11 @@ struct ProactiveSuggestion {
 class ProactiveTriggerEngine {
     weak var controller: LilAgentsController?
 
-    // Cooldown: min 2 min between any trigger; 10 min per trigger type
+    // Cooldown: 10 s between any trigger; 30 s per trigger type
     private var lastTriggerTime: Date = .distantPast
     private var lastTriggerTypeTime: [String: Date] = [:]
-    private let globalCooldown: TimeInterval  = 120
-    private let typeCooldown:   TimeInterval  = 600
+    private let globalCooldown: TimeInterval  = 10
+    private let typeCooldown:   TimeInterval  = 30
 
     // MARK: - Event Handlers (called by ScreenObserver)
 
@@ -47,27 +47,19 @@ class ProactiveTriggerEngine {
     // MARK: - Clipboard Suggestions
 
     private func makeClipboardSuggestion(content: String) -> ProactiveSuggestion? {
-        // Skip if it looks like a file path or single word
+        // Skip file paths and very short single-word copies
         guard !content.hasPrefix("/"), content.contains(" ") || content.count > 60 else { return nil }
 
         let charCount = content.count
         let wordCount = content.split(separator: " ").count
 
-        // English text → offer translation (useful for Chinese-language users)
         let hasChineseChars = content.unicodeScalars.contains {
             (0x4E00...0x9FFF).contains($0.value) || (0x3040...0x30FF).contains($0.value)
         }
         let looksEnglish = content.range(of: "[a-zA-Z]{3,}", options: .regularExpression) != nil
 
-        if looksEnglish && !hasChineseChars && charCount > 30 {
-            return ProactiveSuggestion(
-                bubbleText: "翻译一下？",
-                promptText: "帮我翻译这段文字（保持原意，用中文）：\n\n\(content)",
-                typeKey: "clipboard"
-            )
-        }
-
-        // Long text → summarize
+        // 1. Long text (any language) → summarize. Check FIRST so long English
+        //    text doesn't fall into the translation branch below.
         if wordCount > 80 || charCount > 400 {
             return ProactiveSuggestion(
                 bubbleText: "帮你总结？",
@@ -76,13 +68,22 @@ class ProactiveTriggerEngine {
             )
         }
 
-        // Looks like code
+        // 2. Code snippet → explain
         let codeIndicators = ["{", "}", "=>", "func ", "def ", "class ", "import ", "var ", "let ", "const "]
         let looksLikeCode = codeIndicators.contains { content.contains($0) } && charCount > 40
         if looksLikeCode {
             return ProactiveSuggestion(
                 bubbleText: "解释这段代码？",
                 promptText: "帮我解释这段代码在做什么：\n\n```\n\(content)\n```",
+                typeKey: "clipboard"
+            )
+        }
+
+        // 3. Short English text → translate
+        if looksEnglish && !hasChineseChars && charCount > 30 {
+            return ProactiveSuggestion(
+                bubbleText: "翻译一下？",
+                promptText: "帮我翻译这段文字（保持原意，用中文）：\n\n\(content)",
                 typeKey: "clipboard"
             )
         }
