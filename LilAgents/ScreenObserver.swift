@@ -158,14 +158,25 @@ class ScreenObserver {
                 result.selectedText = (selRef as? String) ?? ""
             }
 
-            // When nothing is selected, fall back to the element's full text value.
-            // This captures terminal buffer text, Xcode editor content, etc.
+            // When nothing is selected, try the focused element's value first,
+            // then fall back to a tree search for any visible text area.
             if result.selectedText.isEmpty {
                 var valRef: CFTypeRef?
                 if AXUIElementCopyAttributeValue(axElement, kAXValueAttribute as CFString, &valRef) == .success,
                    let raw = valRef as? String, !raw.isEmpty {
-                    // Keep only the last 2 000 chars to avoid huge prompts
                     result.visibleText = String(raw.suffix(2000))
+                } else {
+                    // Focused element has no value — walk the window's AX tree to find
+                    // the first text area (handles Xcode where focus is on a toolbar, etc.)
+                    var winRef: CFTypeRef?
+                    let winAttr = kAXFocusedWindowAttribute
+                    if AXUIElementCopyAttributeValue(axApp, winAttr as CFString, &winRef) == .success,
+                       let winRef = winRef {
+                        let axWin = winRef as! AXUIElement
+                        if let text = axTextAreaValue(in: axWin, maxDepth: 8) {
+                            result.visibleText = String(text.suffix(2000))
+                        }
+                    }
                 }
             }
         }
@@ -188,6 +199,41 @@ class ScreenObserver {
         guard AXUIElementCopyAttributeValue(axWin, kAXTitleAttribute as CFString, &titleRef) == .success,
               let t = titleRef as? String, !t.isEmpty else { return nil }
         return t
+    }
+
+    /// Depth-first search for the first AXTextArea (or any element with a non-trivial
+    /// string value) inside `root`. Returns the text value or nil.
+    /// Skips subtrees deeper than `maxDepth` to stay fast.
+    private func axTextAreaValue(in root: AXUIElement, maxDepth: Int) -> String? {
+        guard maxDepth > 0 else { return nil }
+
+        // Check this node's role and value
+        var roleRef: CFTypeRef?
+        AXUIElementCopyAttributeValue(root, kAXRoleAttribute as CFString, &roleRef)
+        let role = (roleRef as? String) ?? ""
+
+        if role == kAXTextAreaRole || role == kAXTextFieldRole || role == "AXCodeEditor" {
+            var valRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(root, kAXValueAttribute as CFString, &valRef) == .success,
+               let text = valRef as? String, text.count > 30 {
+                return text
+            }
+        }
+
+        // Recurse into children via raw CF iteration (avoids bridging pitfalls)
+        var childrenRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(root, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+              let childrenRef = childrenRef else { return nil }
+        let cfArr = childrenRef as! CFArray
+        let count = CFArrayGetCount(cfArr)
+        for i in 0..<count {
+            guard let rawPtr = CFArrayGetValueAtIndex(cfArr, i) else { continue }
+            let child = Unmanaged<AXUIElement>.fromOpaque(rawPtr).takeUnretainedValue()
+            if let found = axTextAreaValue(in: child, maxDepth: maxDepth - 1) {
+                return found
+            }
+        }
+        return nil
     }
 
     private func axWindowTitleFromList(_ axApp: AXUIElement) -> String? {
